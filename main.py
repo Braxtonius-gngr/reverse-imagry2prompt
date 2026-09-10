@@ -8,7 +8,6 @@ import replicate
 
 app = FastAPI(title="Reverse Imagery to Prompt API")
 
-# Initialize the Gemini client (picks up GEMINI_API_KEY environment variable)
 client = genai.Client()
 
 class ReversePromptSchema(BaseModel):
@@ -34,16 +33,13 @@ async def generate_reverse_prompt(file: UploadFile = File(...)):
     temp_file_path = f"temp_{file.filename}"
     
     try:
-        # Save uploaded file bytes to disk temporarily
         contents = await file.read()
         with open(temp_file_path, "wb") as buffer:
             buffer.write(contents)
 
-        # Correct file upload syntax for the google-genai SDK
-        with open(temp_file_path, "rb") as f:
-            uploaded_media = client.files.upload(file=f)
+        # Pass the file path string directly to the Gemini SDK
+        uploaded_media = client.files.upload(file=temp_file_path)
         
-        # If it's a video, wait for Google's servers to process it
         if file.content_type.startswith('video/'):
             while uploaded_media.state.name == "PROCESSING":
                 time.sleep(2)
@@ -71,7 +67,6 @@ async def generate_reverse_prompt(file: UploadFile = File(...)):
             )
         )
 
-        # Cleanup remote file and local temp file
         try:
             client.files.delete(name=uploaded_media.name)
         except Exception:
