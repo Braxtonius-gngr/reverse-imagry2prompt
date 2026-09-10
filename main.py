@@ -27,20 +27,19 @@ def health_check():
 
 @app.post("/api/v1/reverse-prompt")
 async def generate_reverse_prompt(file: UploadFile = File(...)):
-    if not file.content_type.startswith(('video/', 'image/')):
-        raise HTTPException(status_code=400, detail="Only video or image files are supported.")
-
     temp_file_path = f"temp_{file.filename}"
     
     try:
+        # Save incoming file bytes locally
         contents = await file.read()
         with open(temp_file_path, "wb") as buffer:
             buffer.write(contents)
 
-        # Pass the file path string directly to the Gemini SDK
+        # Upload to Gemini File API
         uploaded_media = client.files.upload(file=temp_file_path)
         
-        if file.content_type.startswith('video/'):
+        # If it's a video, wait for processing
+        if file.content_type and file.content_type.startswith('video/'):
             while uploaded_media.state.name == "PROCESSING":
                 time.sleep(2)
                 uploaded_media = client.files.get(name=uploaded_media.name)
@@ -67,6 +66,7 @@ async def generate_reverse_prompt(file: UploadFile = File(...)):
             )
         )
 
+        # Cleanup local and remote files
         try:
             client.files.delete(name=uploaded_media.name)
         except Exception:
