@@ -1,5 +1,6 @@
 import os
 import time
+import json
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from google import genai
 from google.genai import types
@@ -45,7 +46,7 @@ async def generate_reverse_prompt(file: UploadFile = File(...)):
                 uploaded_media = client.files.get(name=uploaded_media.name)
                 
             if uploaded_media.state.name == "FAILED":
-                 raise HTTPException(status_code=500, detail="Video processing failed.")
+                raise HTTPException(status_code=500, detail="Video processing failed.")
 
         system_instruction = """
         You are an elite AI Prompt Reverse-Engineer. Your job is to analyze the provided media and output a highly optimized text prompt designed to recreate it in a generative AI model.
@@ -75,8 +76,16 @@ async def generate_reverse_prompt(file: UploadFile = File(...)):
         if os.path.exists(temp_file_path):
             os.remove(temp_file_path)
 
-        return {"status": "success", "data": response.text}
+        # Parse the JSON response properly
+        try:
+            response_data = json.loads(response.text)
+        except json.JSONDecodeError:
+            response_data = response.text
 
+        return {"status": "success", "data": response_data}
+
+    except HTTPException:
+        raise
     except Exception as e:
         if os.path.exists(temp_file_path):
             os.remove(temp_file_path)
