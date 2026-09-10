@@ -1,62 +1,100 @@
-import streamlit as st
-import requests
-import json
+import os
+import time
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from google import genai
+from google.genai import types
+from pydantic import BaseModel, Field
+import replicate
 
-# Your live FastAPI backend URL
-API_URL = "https://reverse-imagry2prompt.onrender.com/api/v1/reverse-prompt"
-GENERATE_URL = "https://reverse-imagry2prompt.onrender.com/api/v1/generate"
+app = FastAPI(title="Reverse Imagery to Prompt API")
 
-st.set_page_config(page_title="Reverse Prompt Engineer", page_icon="🎥", layout="centered")
+client = genai.Client()
 
-st.title("🎥 AI Reverse Prompt Engineer")
-st.write("Upload a video or image, and the AI will deconstruct it into an optimized generation prompt.")
+class ReversePromptSchema(BaseModel):
+    medium_type: str = Field(description="Strictly classify as either 'Live-Action' or 'Animated'.")
+    core_subject: str = Field(description="The primary subject, their appearance, and exact actions.")
+    environment: str = Field(description="The setting, time of day, and background atmosphere.")
+    camera_and_motion: str = Field(description="For real-world: lens and camera movement. For animation: perspective and frame pacing.")
+    stylistic_modifiers: str = Field(description="For real-world: lighting and film stock. For animation: rendering engine, texture, and artistic style.")
+    final_prompt: str = Field(description="A 50-75 word optimized prompt combining all extracted elements, ready to be pasted into a generator.")
 
-uploaded_file = st.file_uploader("Upload Media (MP4, MOV, JPG, PNG)", type=["mp4", "mov", "jpg", "png"])
+class GenerateRequest(BaseModel):
+    prompt: str
 
-if uploaded_file is not None:
-    if uploaded_file.type.startswith('image'):
-        st.image(uploaded_file, caption="Uploaded Image", use_container_width=True)
-    elif uploaded_file.type.startswith('video'):
-        st.video(uploaded_file)
+@app.get("/")
+def health_check():
+    return {"status": "ok", "message": "API is online"}
 
-    if st.button("Generate Prompt", type="primary"):
-        with st.spinner("Analyzing media... (Videos may take a minute)"):
-            try:
-                files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
-                response = requests.post(API_URL, files=files)
+@app.post("/api/v1/reverse-prompt")
+async def generate_reverse_prompt(file: UploadFile = File(...)):
+    temp_file_path = f"temp_{file.filename}"
+    
+    try:
+        # Save incoming file bytes locally
+        contents = await file.read()
+        with open(temp_file_path, "wb") as buffer:
+            buffer.write(contents)
+
+        # Upload to Gemini File API
+        uploaded_media = client.files.upload(file=temp_file_path)
+        
+        # If it's a video, wait for processing
+        if file.content_type and file.content_type.startswith('video/'):
+            while uploaded_media.state.name == "PROCESSING":
+                time.sleep(2)
+                uploaded_media = client.files.get(name=uploaded_media.name)
                 
-                if response.status_code == 200:
-                    response_json = response.json()
-                    data = json.loads(response_json["data"])
-                    
-                    st.success("Analysis Complete!")
-                    st.subheader("✨ Optimized Generation Prompt")
-                    st.info(data["final_prompt"])
-                    
-                    st.subheader("🔍 Detailed Breakdown")
-                    st.write(f"**Medium:** {data['medium_type']}")
-                    st.write(f"**Subject:** {data['core_subject']}")
-                    st.write(f"**Environment:** {data['environment']}")
-                    st.write(f"**Camera & Motion:** {data['camera_and_motion']}")
-                    st.write(f"**Style:** {data['stylistic_modifiers']}")
-                    
-                    # Store the prompt in session state so we can generate an image from it
-                    st.session_state['generated_prompt'] = data["final_prompt"]
-                else:
-                    # ✨ WE UPDATED THIS LINE TO REVEAL THE HIDDEN ERROR ✨
-                    st.error(f"API Error {response.status_code}: {response.text}")
-            except Exception as e:
-                st.error(f"Connection failed: {e}")
+            if uploaded_media.state.name == "FAILED":
+                 raise HTTPException(status_code=500, detail="Video processing failed.")
 
-# If we have a prompt, show the button to generate the image via Replicate
-if 'generated_prompt' in st.session_state:
-    if st.button("🖼️ Generate Image from this Prompt"):
-        with st.spinner("Generating new image via FLUX..."):
-            gen_payload = {"prompt": st.session_state['generated_prompt']}
-            gen_response = requests.post(GENERATE_URL, json=gen_payload)
-            
-            if gen_response.status_code == 200:
-                media_url = gen_response.json().get("media_url")
-                st.image(media_url, caption="AI Recreation", use_container_width=True)
-            else:
-                st.error(f"Failed to generate media: {gen_response.text}")
+        system_instruction = """
+        You are an elite AI Prompt Reverse-Engineer. Your job is to analyze the provided media and output a highly optimized text prompt designed to recreate it in a generative AI model.
+        1. Determine if the media is 'Live-Action' or 'Animated'.
+        2. Extract key variables (camera, lighting, rendering style, textures).
+        3. Analyze motion and timing.
+        4. Synthesize into a dense, optimized prompt block.
+        """
+
+        response = client.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=[uploaded_media, "Analyze this media and extract the exact generative prompt parameters."],
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                response_mime_type="application/json",
+                response_schema=ReversePromptSchema,
+                temperature=0.4
+            )
+        )
+
+        # Cleanup local and remote files
+        try:
+            client.files.delete(name=uploaded_media.name)
+        except Exception:
+            pass
+
+        if os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
+
+        return {"status": "success", "data": response.text}
+
+    except Exception as e:
+        if os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/generate")
+async def generate_media(request: GenerateRequest):
+    try:
+        output = replicate.run(
+            "black-forest-labs/flux-schnell",
+            input={
+                "prompt": request.prompt,
+                "go_fast": True,
+                "megapixels": "1",
+                "num_outputs": 1,
+                "output_format": "webp"
+            }
+        )
+        return {"status": "success", "media_url": output[0]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
