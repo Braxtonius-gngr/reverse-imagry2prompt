@@ -57,7 +57,7 @@ async def generate_reverse_prompt(file: UploadFile = File(...)):
         """
 
         response = client.models.generate_content(
-            model='gemini-1.5-flash',
+            model='gemini-2.5-flash',
             contents=[uploaded_media, "Analyze this media and extract the exact generative prompt parameters."],
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
