@@ -10,6 +10,7 @@ import replicate
 app = FastAPI(title="Reverse Imagery to Prompt API")
 
 client = genai.Client()
+gemini_model = os.getenv("GEMINI_MODEL") or "gemini-3.6-flash"
 
 class ReversePromptSchema(BaseModel):
     medium_type: str = Field(description="Strictly classify as either 'Live-Action' or 'Animated'.")
@@ -57,7 +58,7 @@ async def generate_reverse_prompt(file: UploadFile = File(...)):
         """
 
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model=gemini_model,
             contents=[uploaded_media, "Analyze this media and extract the exact generative prompt parameters."],
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
